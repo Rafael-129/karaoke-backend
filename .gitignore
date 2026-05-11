@@ -1,0 +1,23 @@
+# entorno virtual
+.venv/
+
+# python
+__pycache__/
+*.pyc
+
+# modelos
+*.pt
+*.bin
+
+# audios/videos
+*.wav
+*.mp3
+*.mp4
+
+# data generada
+app/data/uploads/
+app/data/outputs/
+app/data/whisper-models/
+
+# opcional
+.env
