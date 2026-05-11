@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from functools import lru_cache
 import io
 import os
+import re
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from dotenv import load_dotenv
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -14,10 +16,11 @@ from fastapi.responses import FileResponse, StreamingResponse
 import soundfile as sf
 import whisper
 import numpy as np
+import torch
 
 from demucs.apply import apply_model
+from demucs.audio import convert_audio
 from demucs.pretrained import get_model
-from demucs.separate import load_track
 from supabase import create_client
 
 # Load environment variables
@@ -57,6 +60,10 @@ app = FastAPI(title="karaoke-backend")
 UPLOADS_BUCKET = "uploads"
 OUTPUTS_BUCKET = "outputs"
 
+# Chunk storage for parallel uploads
+CHUNKS_DIR = DATA_DIR / "chunks"
+CHUNKS_DIR.mkdir(exist_ok=True)
+
 
 @lru_cache(maxsize=1)
 def load_demucs_model():
@@ -71,6 +78,38 @@ def load_whisper_model():
     WHISPER_DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
     return whisper.load_model(WHISPER_MODEL, download_root=str(WHISPER_DOWNLOAD_ROOT))
 
+
+
+def convert_to_wav(input_path: Path, output_path: Path) -> None:
+    """Convert any audio/video file to WAV (PCM s16le stereo 44100Hz) via ffmpeg subprocess."""
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i", str(input_path),
+        "-vn",
+        "-acodec", "pcm_s16le",
+        "-ar", "44100",
+        "-ac", "2",
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg conversion failed (code {result.returncode}):\n{result.stderr[-2000:]}"
+        )
+
+
+def load_audio_for_demucs(wav_path: Path, target_channels: int, target_samplerate: int) -> torch.Tensor:
+    """
+    Load a WAV file with soundfile (no torchaudio/torchcodec needed) and
+    convert it to the tensor format expected by demucs: float32 [C, T].
+    Resampling and channel conversion are handled by demucs.audio.convert_audio.
+    """
+    data, sr = sf.read(str(wav_path), dtype="float32", always_2d=True)
+    # soundfile returns [T, C] — transpose to [C, T]
+    wav = torch.from_numpy(data.T)  # shape: [C, T]
+    wav = convert_audio(wav, sr, target_samplerate, target_channels)
+    return wav
 
 
 def format_duration(seconds: float | None) -> str:
@@ -246,37 +285,134 @@ def reset_catalog() -> dict[str, str]:
 @app.post("/separate")
 async def separate(
     file: UploadFile = File(...),
-    title: str = Form(...),
-    artist: str = Form(...),
+    title: Optional[str] = Form(None),
+    artist: Optional[str] = Form(None),
     lyrics: str = Form(""),
     tags: str = Form(""),
+    job_id: Optional[str] = Form(None),
+    chunk_index: Optional[int] = Form(None),
+    total_chunks: Optional[int] = Form(None),
 ) -> dict[str, Any]:
+    """
+    Handle file upload with optional chunked transfer.
+    Chunks are reassembled before processing.
+    """
     if not file or not file.filename:
         raise HTTPException(status_code=400, detail="Missing file.")
 
-    job_id = uuid.uuid4().hex
-    file_content = await file.read()
-    await file.close()
+    # Use provided job_id or generate one for single-file uploads
+    if not job_id:
+        job_id = uuid.uuid4().hex
 
+    chunk_file_content = await file.read()
+    await file.close()
     safe_filename = Path(file.filename).name if file.filename else "upload.bin"
+    
+    # Strip .chunk_N suffix if present (from chunked uploads)
+    original_filename = re.sub(r"\.chunk_\d+$", "", safe_filename)
+    if not original_filename:
+        original_filename = "upload.bin"
 
     try:
+        # Handle chunked upload
+        if chunk_index is not None and total_chunks is not None:
+            # Store chunk
+            chunk_dir = CHUNKS_DIR / job_id
+            chunk_dir.mkdir(parents=True, exist_ok=True)
+            chunk_path = chunk_dir / f"chunk_{chunk_index:06d}"
+            chunk_path.write_bytes(chunk_file_content)
+            print(f"[CHUNKS] Stored chunk {chunk_index}: {len(chunk_file_content)} bytes to {chunk_path}", flush=True)
+
+            # Check if this is the last chunk
+            is_final_chunk = chunk_index == total_chunks - 1
+            
+            if not is_final_chunk:
+                return {
+                    "job_id": job_id,
+                    "status": "chunk_received",
+                    "chunk": chunk_index,
+                    "total": total_chunks,
+                }
+
+            # Final chunk received - validate and reassemble all chunks
+            print(f"[CHUNKS] Final chunk received. Validating all {total_chunks} chunks for job {job_id}", flush=True)
+            
+            # Check all chunks exist (with retries for network delays)
+            missing_chunks = []
+            max_retries = 5
+            retry_delay = 0.5  # seconds
+            
+            for attempt in range(max_retries):
+                missing_chunks = []
+                for i in range(total_chunks):
+                    chunk_file = chunk_dir / f"chunk_{i:06d}"
+                    if not chunk_file.exists():
+                        missing_chunks.append(i)
+                    else:
+                        file_size = chunk_file.stat().st_size
+                        print(f"[CHUNKS] Chunk {i} exists: {file_size} bytes", flush=True)
+                
+                if not missing_chunks:
+                    break
+                
+                if attempt < max_retries - 1:
+                    print(f"[CHUNKS] Missing chunks {missing_chunks}, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})", flush=True)
+                    await asyncio.sleep(retry_delay)
+            
+            if missing_chunks:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Missing chunks: {missing_chunks}. Received {total_chunks - len(missing_chunks)}/{total_chunks}."
+                )
+            
+            # Reassemble all chunks in order
+            print(f"[CHUNKS] Assembling {total_chunks} chunks for job {job_id}", flush=True)
+            file_content = b""
+            for i in range(total_chunks):
+                chunk_file = chunk_dir / f"chunk_{i:06d}"
+                chunk_data = chunk_file.read_bytes()
+                file_content += chunk_data
+                chunk_file.unlink()
+                print(f"[CHUNKS] Added chunk {i}: {len(chunk_data)} bytes (total: {len(file_content)} bytes)", flush=True)
+            
+            chunk_dir.rmdir()
+            print(f"[CHUNKS] Assembly complete. Final file size: {len(file_content)} bytes", flush=True)
+
+            if not file_content:
+                raise HTTPException(status_code=400, detail="Reassembled file is empty.")
+        else:
+            file_content = chunk_file_content
+
+        # Validate metadata for processing
+        if not title or not artist:
+            raise HTTPException(status_code=400, detail="Title and artist required.")
+
         # Probe duration from file bytes
-        duration = probe_duration_label(file_content, safe_filename)
+        duration = probe_duration_label(file_content, original_filename)
 
         # Upload original file to Supabase Storage
-        file_path = f"{job_id}/{safe_filename}"
+        file_path = f"{job_id}/{original_filename}"
         supabase.storage.from_(UPLOADS_BUCKET).upload(file_path, file_content)
 
         # Separate audio locally
         model = load_demucs_model()
 
         # Save file temporarily for processing
-        temp_input = DATA_DIR / f"temp-input-{job_id}.bin"
+        original_suffix = Path(original_filename).suffix.lower() or ".bin"
+        temp_input = DATA_DIR / f"temp-input-{job_id}{original_suffix}"
         temp_input.write_bytes(file_content)
 
+        # Pre-convert to WAV so demucs/torchaudio can always read it
+        temp_wav = DATA_DIR / f"temp-input-{job_id}.wav"
         try:
-            mix = load_track(temp_input, model.audio_channels, model.samplerate).unsqueeze(0)
+            convert_to_wav(temp_input, temp_wav)
+        except Exception as conv_err:
+            print(f"[CONVERT] ffmpeg conversion error: {conv_err}", flush=True)
+            # Fallback: try passing the original file directly
+            temp_wav = temp_input
+
+        try:
+            mix = load_audio_for_demucs(temp_wav, model.audio_channels, model.samplerate).unsqueeze(0)
             sources = apply_model(model, mix, device="cpu")
 
             try:
@@ -353,14 +489,14 @@ async def separate(
             # Save to Supabase database
             song_data = {
                 "job_id": job_id,
-                "title": title.strip() or Path(safe_filename).stem,
+                "title": title.strip() or Path(original_filename).stem,
                 "artist": artist.strip() or "Artista desconocido",
                 "bpm": 0,
                 "duration": duration,
                 "lrc_preview": preview,
                 "lrc": extracted_lrc,
                 "tags": normalize_tags(tags),
-                "video_url": f"/uploads/{job_id}/{safe_filename}",
+                "video_url": f"/uploads/{job_id}/{original_filename}",
                 "instrumental_url": f"/files/{job_id}/no_vocals.wav",
             }
 
@@ -385,6 +521,8 @@ async def separate(
 
         finally:
             temp_input.unlink(missing_ok=True)
+            if temp_wav != temp_input:
+                temp_wav.unlink(missing_ok=True)
 
     except Exception as exc:
         error_text = str(exc).strip()
