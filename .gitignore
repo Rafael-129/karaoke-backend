@@ -21,3 +21,4 @@ app/data/whisper-models/
 
 # opcional
 .env
+.env.local
