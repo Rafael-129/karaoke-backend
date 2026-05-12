@@ -6,17 +6,19 @@ import io
 import os
 import re
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Optional
 from dotenv import load_dotenv
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, BackgroundTasks
 from fastapi.responses import FileResponse, StreamingResponse
 import soundfile as sf
 import whisper
 import numpy as np
 import torch
+from typing import Any, Optional, Dict
 
 from demucs.apply import apply_model
 from demucs.audio import convert_audio
@@ -63,6 +65,39 @@ OUTPUTS_BUCKET = "outputs"
 # Chunk storage for parallel uploads
 CHUNKS_DIR = DATA_DIR / "chunks"
 CHUNKS_DIR.mkdir(exist_ok=True)
+
+
+# Global status tracker for background jobs
+jobs_status: Dict[str, Dict[str, Any]] = {}
+
+
+def audio_to_mp3_bytes(audio_np: np.ndarray, samplerate: int) -> bytes:
+    """Converts a numpy audio array to MP3 bytes using ffmpeg."""
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
+        wav_path = wav_file.name
+        sf.write(wav_path, audio_np.T, samplerate, format="WAV")
+    
+    mp3_path = wav_path.replace(".wav", ".mp3")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", wav_path, "-codec:a", "libmp3lame", "-qscale:a", "2", mp3_path],
+            check=True,
+            capture_output=True
+        )
+        with open(mp3_path, "rb") as f:
+            return f.read()
+    except Exception as e:
+        print(f"[CONVERT ERROR] Failed to convert to mp3: {e}")
+        with open(wav_path, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            if os.path.exists(wav_path):
+                os.remove(wav_path)
+            if os.path.exists(mp3_path):
+                os.remove(mp3_path)
+        except Exception:
+            pass
 
 
 @lru_cache(maxsize=1)
@@ -335,8 +370,29 @@ def reset_catalog() -> dict[str, str]:
         raise HTTPException(status_code=500, detail=f"Error clearing catalog: {str(e)}")
 
 
+@app.get("/jobs/{job_id}")
+async def get_job_status(job_id: str):
+    if job_id not in jobs_status:
+        # Check if it already exists in the database as a fallback
+        try:
+            res = supabase.table("songs").select("*").eq("job_id", job_id).execute()
+            if res.data:
+                return {
+                    "job_id": job_id,
+                    "status": "completed",
+                    "progress": 100,
+                    "message": "Completado",
+                    "song": res.data[0]
+                }
+        except Exception:
+            pass
+        raise HTTPException(status_code=404, detail="Job not found")
+    return jobs_status[job_id]
+
+
 @app.post("/separate")
 async def separate(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
     artist: Optional[str] = Form(None),
@@ -346,6 +402,7 @@ async def separate(
     chunk_index: Optional[int] = Form(None),
     total_chunks: Optional[int] = Form(None),
 ) -> dict[str, Any]:
+    print(f"[DEBUG] /separate hit: job_id={job_id}, chunk={chunk_index}/{total_chunks}", flush=True)
     """
     Handle file upload with optional chunked transfer.
     Chunks are reassembled before processing.
@@ -390,52 +447,91 @@ async def separate(
             # Final chunk received - validate and reassemble all chunks
             print(f"[CHUNKS] Final chunk received. Validating all {total_chunks} chunks for job {job_id}", flush=True)
             
-            # Check all chunks exist (with retries for network delays)
-            missing_chunks = []
-            max_retries = 5
-            retry_delay = 0.5  # seconds
+            # Start background processing
+            jobs_status[job_id] = {
+                "job_id": job_id,
+                "status": "processing",
+                "progress": 10,
+                "message": "Ensamblando archivos..."
+            }
             
-            for attempt in range(max_retries):
-                missing_chunks = []
+            background_tasks.add_task(
+                process_audio_task,
+                job_id=job_id,
+                total_chunks=total_chunks,
+                original_filename=original_filename,
+                title=title,
+                artist=artist,
+                lyrics=lyrics,
+                tags=tags
+            )
+            
+            return {
+                "job_id": job_id,
+                "status": "processing",
+                "message": "Procesamiento iniciado en segundo plano"
+            }
+        
+        # Single file upload (not chunked)
+        file_content = chunk_file_content
+        background_tasks.add_task(
+            process_audio_task,
+            job_id=job_id,
+            file_content=file_content,
+            original_filename=original_filename,
+            title=title,
+            artist=artist,
+            lyrics=lyrics,
+            tags=tags
+        )
+        return {
+            "job_id": job_id,
+            "status": "processing",
+            "message": "Procesamiento iniciado"
+        }
+
+    except Exception as e:
+        print(f"[UPLOAD ERROR] {str(e)}", flush=True)
+        jobs_status[job_id] = {"status": "error", "message": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def process_audio_task(
+    job_id: str,
+    total_chunks: Optional[int] = None,
+    file_content: Optional[bytes] = None,
+    original_filename: str = "upload.bin",
+    title: Optional[str] = None,
+    artist: Optional[str] = None,
+    lyrics: str = "",
+    tags: str = ""
+):
+    try:
+        if total_chunks:
+            chunk_dir = CHUNKS_DIR / job_id
+            assembled_path = chunk_dir / "assembled.bin"
+            with open(assembled_path, "wb") as f:
                 for i in range(total_chunks):
                     chunk_file = chunk_dir / f"chunk_{i:06d}"
-                    if not chunk_file.exists():
-                        missing_chunks.append(i)
-                    else:
-                        file_size = chunk_file.stat().st_size
-                        print(f"[CHUNKS] Chunk {i} exists: {file_size} bytes", flush=True)
-                
-                if not missing_chunks:
-                    break
-                
-                if attempt < max_retries - 1:
-                    print(f"[CHUNKS] Missing chunks {missing_chunks}, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})", flush=True)
-                    await asyncio.sleep(retry_delay)
-            
-            if missing_chunks:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Missing chunks: {missing_chunks}. Received {total_chunks - len(missing_chunks)}/{total_chunks}."
-                )
-            
-            # Reassemble all chunks in order
-            print(f"[CHUNKS] Assembling {total_chunks} chunks for job {job_id}", flush=True)
-            file_content = b""
-            for i in range(total_chunks):
-                chunk_file = chunk_dir / f"chunk_{i:06d}"
-                chunk_data = chunk_file.read_bytes()
-                file_content += chunk_data
-                chunk_file.unlink()
-                print(f"[CHUNKS] Added chunk {i}: {len(chunk_data)} bytes (total: {len(file_content)} bytes)", flush=True)
-            
-            chunk_dir.rmdir()
-            print(f"[CHUNKS] Assembly complete. Final file size: {len(file_content)} bytes", flush=True)
+                    f.write(chunk_file.read_bytes())
+                    chunk_file.unlink() # Cleanup chunks
+            file_content = assembled_path.read_bytes()
+            assembled_path.unlink() # Cleanup assembled file
+            try:
+                chunk_dir.rmdir() # Cleanup dir
+            except Exception:
+                pass
+        
+        if not file_content:
+            jobs_status[job_id] = {"status": "error", "message": "No file content to process"}
+            return
 
-            if not file_content:
-                raise HTTPException(status_code=400, detail="Reassembled file is empty.")
-        else:
-            file_content = chunk_file_content
-
+        # Start Processing
+        jobs_status[job_id] = {"status": "processing", "progress": 20, "message": "Quitando la voz con IA..."}
+        
+        # Process audio with Demucs
+        model = load_demucs_model()
+        
         # Validate metadata for processing
         if not title or not artist:
             raise HTTPException(status_code=400, detail="Title and artist required.")
@@ -510,13 +606,13 @@ async def separate(
             if max_val > 1.0:
                 instrumental_np = instrumental_np / max_val
 
-            # Save instrumental to bytes
-            instrumental_buffer = io.BytesIO()
-            sf.write(instrumental_buffer, instrumental_np.T, model.samplerate, format="WAV")
-            instrumental_bytes = instrumental_buffer.getvalue()
+            # Save instrumental to bytes as MP3 to avoid Payload Too Large errors
+            print(f"[SEPARATE] Converting instrumental to MP3...")
+            instrumental_bytes = audio_to_mp3_bytes(instrumental_np, model.samplerate)
 
             # Upload instrumental to Storage
-            instrumental_path = f"{job_id}/no_vocals.wav"
+            instrumental_path = f"{job_id}/no_vocals.mp3"
+            print(f"[SEPARATE] Uploading instrumental ({len(instrumental_bytes)} bytes)...")
             supabase.storage.from_(OUTPUTS_BUCKET).upload(instrumental_path, instrumental_bytes)
 
             # Extract vocals for transcription
@@ -536,10 +632,12 @@ async def separate(
                 vocals_bytes = file_content
 
             # Extract lyrics
+            jobs_status[job_id] = {"status": "processing", "progress": 70, "message": "Sincronizando letras con IA..."}
             extracted_lrc = extract_lyrics_with_timestamps(vocals_bytes, "vocals.wav", title or "", artist or "")
             preview = build_preview(extracted_lrc)
 
             # Save to Supabase database
+            jobs_status[job_id] = {"status": "processing", "progress": 90, "message": "Guardando en el catálogo..."}
             song_data = {
                 "job_id": job_id,
                 "title": title.strip() or Path(original_filename).stem,
@@ -550,14 +648,16 @@ async def separate(
                 "lrc": extracted_lrc,
                 "tags": normalize_tags(tags),
                 "video_url": f"/uploads/{job_id}/{original_filename}",
-                "instrumental_url": f"/files/{job_id}/no_vocals.wav",
+                "instrumental_url": f"/files/{job_id}/no_vocals.mp3",
             }
 
             supabase.table("songs").insert(song_data).execute()
 
-            return {
+            jobs_status[job_id] = {
                 "job_id": job_id,
-                "download_url": song_data["instrumental_url"],
+                "status": "completed",
+                "progress": 100,
+                "message": "¡Todo listo!",
                 "song": {
                     "id": job_id,
                     "title": song_data["title"],
@@ -580,8 +680,7 @@ async def separate(
     except Exception as exc:
         error_text = str(exc).strip()
         print(f"[SEPARATE ERROR] Full error:\n{error_text}", flush=True)
-        snippet = error_text[:300] if error_text else "Separation failed."
-        raise HTTPException(status_code=500, detail=snippet) from exc
+        jobs_status[job_id] = {"status": "error", "message": error_text[:300]}
 
 
 @app.get("/uploads/{job_id}/{filename}")
@@ -601,6 +700,6 @@ def get_file(job_id: str, filename: str) -> StreamingResponse:
         safe_name = Path(filename).name
         file_path = f"{job_id}/{safe_name}"
         response = supabase.storage.from_(OUTPUTS_BUCKET).download(file_path)
-        return StreamingResponse(io.BytesIO(response), media_type="audio/wav")
+        return StreamingResponse(io.BytesIO(response), media_type="audio/mpeg")
     except Exception:
         raise HTTPException(status_code=404, detail="File not found.")
