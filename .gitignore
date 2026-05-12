@@ -1,3 +1,10 @@
+.venv/
+antenv/
+app/data/chunks/
+app/data/uploads/
+app/data/outputs/
+__pycache__/
+*.pyc
 # entorno virtual
 .venv/
 

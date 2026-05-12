@@ -273,6 +273,54 @@ def get_catalog_song(song_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Song not found.")
 
 
+@app.delete("/catalog/{song_id}")
+def delete_catalog_song(song_id: str) -> dict[str, str]:
+    try:
+        song_response = (
+            supabase.table("songs")
+            .select("job_id,video_url,instrumental_url")
+            .eq("job_id", song_id)
+            .single()
+            .execute()
+        )
+        song = song_response.data
+    except Exception:
+        raise HTTPException(status_code=404, detail="Song not found.")
+
+    if not song:
+        raise HTTPException(status_code=404, detail="Song not found.")
+
+    try:
+        supabase.table("songs").delete().eq("job_id", song_id).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error deleting song: {str(exc)}")
+
+    storage_targets: list[tuple[str, str]] = []
+    video_url = song.get("video_url")
+    instrumental_url = song.get("instrumental_url")
+
+    if isinstance(video_url, str) and video_url.startswith("/uploads/"):
+        uploads_path = video_url.removeprefix("/uploads/")
+        if uploads_path:
+            storage_targets.append((UPLOADS_BUCKET, uploads_path))
+
+    if isinstance(instrumental_url, str) and instrumental_url.startswith("/files/"):
+        outputs_path = instrumental_url.removeprefix("/files/")
+        if outputs_path:
+            storage_targets.append((OUTPUTS_BUCKET, outputs_path))
+
+    for bucket_name, file_path in storage_targets:
+        try:
+            supabase.storage.from_(bucket_name).remove([file_path])
+        except Exception as cleanup_error:
+            print(
+                f"[CATALOG CLEANUP WARNING] Could not delete {bucket_name}/{file_path}: {cleanup_error}",
+                flush=True,
+            )
+
+    return {"status": "ok", "message": "Song deleted"}
+
+
 @app.delete("/catalog")
 def reset_catalog() -> dict[str, str]:
     try:

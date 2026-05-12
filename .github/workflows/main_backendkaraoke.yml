@@ -39,7 +39,17 @@ jobs:
           name: python-app
           path: |
             .
+            !.git/**
+            !.github/**
+            !.venv/**
             !antenv/
+            !app/data/chunks/**
+            !app/data/uploads/**
+            !app/data/outputs/**
+            !**/__pycache__/**
+            !**/*.pyc
+            !test_audio*
+            !videos/**
 
       # 🚫 Opting Out of Oryx Build
       # If you prefer to disable the Oryx build process during deployment, follow these steps:
@@ -67,10 +77,29 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_747F1A3B2BD44BB29AFE0E1FBC26926D }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_87E80AC2B9164CBDB7EA44AB13E03BF3 }}
 
+      - name: Ensure Oryx build settings
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            APP_NAME="backendkaraoke"
+            RESOURCE_GROUP=$(az webapp list --query "[?name=='$APP_NAME'].resourceGroup | [0]" -o tsv)
+
+            if [ -z "$RESOURCE_GROUP" ]; then
+              echo "No se encontro resource group para $APP_NAME"
+              exit 1
+            fi
+
+            echo "App: $APP_NAME / RG: $RESOURCE_GROUP"
+            az webapp config appsettings set \
+              --name "$APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --settings SCM_DO_BUILD_DURING_DEPLOYMENT=true ENABLE_ORYX_BUILD=true WEBSITE_RUN_FROM_PACKAGE=0
+
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
           app-name: 'backendkaraoke'
           slot-name: 'Production'
+          package: .
           
