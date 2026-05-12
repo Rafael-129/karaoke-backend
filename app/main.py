@@ -48,7 +48,7 @@ else:
 
 # Demucs and Whisper configuration
 DEMUCS_MODEL = os.getenv("DEMUCS_MODEL", "htdemucs")
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "es")
 WHISPER_BEAM_SIZE = int(os.getenv("WHISPER_BEAM_SIZE", "5"))
 WHISPER_BEST_OF = int(os.getenv("WHISPER_BEST_OF", "5"))
@@ -159,12 +159,19 @@ def normalize_tags(raw_tags: str) -> list[str]:
     return tags or ["subido"]
 
 
-def extract_lyrics_with_timestamps(audio_bytes: bytes, filename: str) -> str:
+def extract_lyrics_with_timestamps(audio_bytes: bytes, filename: str, title: str = "", artist: str = "") -> str:
     """Extract lyrics from audio bytes using Whisper and generate LRC format with timestamps."""
     temp_path = DATA_DIR / f"temp-audio-{uuid.uuid4().hex}.wav"
     try:
         temp_path.write_bytes(audio_bytes)
         model = load_whisper_model()
+        
+        # Inyectamos contexto a la IA para mejorar la precisión con nombres propios y estilo
+        context_prompt = "Transcribe la letra de una canción en español. "
+        if title or artist:
+            context_prompt += f"La canción se llama '{title}' y es de '{artist}'. "
+        context_prompt += "Corrige palabras lo mejor posible sin resumir ni traducir."
+
         result = model.transcribe(
             str(temp_path),
             language=WHISPER_LANGUAGE,
@@ -175,10 +182,8 @@ def extract_lyrics_with_timestamps(audio_bytes: bytes, filename: str) -> str:
             beam_size=WHISPER_BEAM_SIZE,
             best_of=WHISPER_BEST_OF,
             condition_on_previous_text=False,
-            initial_prompt=(
-                "Transcribe la letra de una canción en español. "
-                "Corrige palabras lo mejor posible sin resumir ni traducir."
-            ),
+            word_timestamps=True,
+            initial_prompt=context_prompt,
         )
 
         lrc_lines = []
@@ -531,7 +536,7 @@ async def separate(
                 vocals_bytes = file_content
 
             # Extract lyrics
-            extracted_lrc = extract_lyrics_with_timestamps(vocals_bytes, "vocals.wav")
+            extracted_lrc = extract_lyrics_with_timestamps(vocals_bytes, "vocals.wav", title or "", artist or "")
             preview = build_preview(extracted_lrc)
 
             # Save to Supabase database
