@@ -39,7 +39,8 @@ jobs:
             --exclude "*/__pycache__/*" \
             --exclude "*.pyc" \
             --exclude "test_audio*" \
-            --exclude "videos/*"
+            --exclude "videos/*" \
+            --exclude "Dockerfile"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -81,6 +82,10 @@ jobs:
                 SCM_DO_BUILD_DURING_DEPLOYMENT=true \
                 ENABLE_ORYX_BUILD=true \
                 WEBSITE_RUN_FROM_PACKAGE=0
+            az webapp config set \
+              --name "$APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --startup-file "uvicorn app.main:app --host 0.0.0.0 --port 8000"
             echo "Esperando estabilizacion..."
             sleep 30
             az webapp restart --name "$APP_NAME" --resource-group "$RESOURCE_GROUP"
@@ -92,9 +97,6 @@ jobs:
           inlineScript: |
             echo "=== Archivos disponibles ==="
             ls -la
-            echo "=== Contenido del zip ==="
-            unzip -l release.zip | head -50
-            echo "=== Deployando ==="
             RESOURCE_GROUP=$(az webapp list --query "[?name=='backendkaraoke'].resourceGroup | [0]" -o tsv)
             az webapp deploy \
               --name backendkaraoke \
