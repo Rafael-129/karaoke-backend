@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from fastapi import BackgroundTasks
 from app.common.formatters import build_preview, normalize_tags
 from app.common.validators import ValidationError, require_file, require_title_artist
 from app.core.config import Settings
@@ -150,6 +150,7 @@ class JobsService:
         job_id: str | None,
         chunk_index: int | None,
         total_chunks: int | None,
+        background_tasks: BackgroundTasks | None = None,
     ) -> dict[str, object]:
         require_file(file_bytes, filename)
 
@@ -171,44 +172,89 @@ class JobsService:
 
         require_title_artist(title, artist)
 
-        self._jobs.set_status(chunk_result.job_id, "processing", 10, "Subiendo...")
-        duration = self._conversion.probe_duration_label(chunk_result.file_bytes, chunk_result.filename)
+        if background_tasks is not None:
+            self._jobs.set_status(chunk_result.job_id, "processing", 5, "En cola...")
+            background_tasks.add_task(
+                self._process_upload,
+                job_id=chunk_result.job_id,
+                file_bytes=chunk_result.file_bytes,
+                filename=chunk_result.filename,
+                title=title,
+                artist=artist,
+                tags=tags,
+            )
+            return {
+                "job_id": chunk_result.job_id,
+                "status": "processing",
+                "progress": 5,
+                "message": "Procesando...",
+            }
 
-        self._storage.upload_original(chunk_result.job_id, chunk_result.filename, chunk_result.file_bytes)
-        self._jobs.set_status(chunk_result.job_id, "processing", 35, "Separando audio...")
-
-        instrumental_bytes, vocals_bytes = self._separation.separate(
-            chunk_result.file_bytes, chunk_result.filename, chunk_result.job_id
-        )
-
-        self._storage.upload_instrumental(chunk_result.job_id, "no_vocals.wav", instrumental_bytes)
-        self._jobs.set_status(chunk_result.job_id, "processing", 70, "Transcribiendo...")
-
-        extracted_lrc = self._transcription.transcribe_lrc(vocals_bytes, title or "", artist or "")
-        preview = build_preview(extracted_lrc)
-
-        song_record = SongRecord(
+        return self._process_upload(
             job_id=chunk_result.job_id,
-            title=title.strip() if title else Path(chunk_result.filename).stem,
-            artist=artist.strip() if artist else "Artista desconocido",
-            bpm=0,
-            duration=duration,
-            lrc_preview=preview,
-            lrc=extracted_lrc,
-            tags=normalize_tags(tags),
-            video_url=f"/uploads/{chunk_result.job_id}/{chunk_result.filename}",
-            instrumental_url=f"/files/{chunk_result.job_id}/no_vocals.wav",
+            file_bytes=chunk_result.file_bytes,
+            filename=chunk_result.filename,
+            title=title,
+            artist=artist,
+            tags=tags,
         )
 
-        self._songs.insert_song(song_record)
-        song_public = to_public(song_record)
-        self._jobs.set_status(chunk_result.job_id, "completed", 100, "Completado", song_public)
+    def _process_upload(
+        self,
+        *,
+        job_id: str,
+        file_bytes: bytes,
+        filename: str,
+        title: str | None,
+        artist: str | None,
+        tags: str,
+    ) -> dict[str, object]:
+        try:
+            self._jobs.set_status(job_id, "processing", 10, "Subiendo...")
+            duration = self._conversion.probe_duration_label(file_bytes, filename)
 
-        return {
-            "job_id": chunk_result.job_id,
-            "download_url": song_record.instrumental_url or "",
-            "song": song_public.model_dump(),
-        }
+            self._storage.upload_original(job_id, filename, file_bytes)
+            self._jobs.set_status(job_id, "processing", 35, "Separando audio...")
+
+            instrumental_bytes, vocals_bytes = self._separation.separate(file_bytes, filename, job_id)
+
+            self._storage.upload_instrumental(job_id, "no_vocals.wav", instrumental_bytes)
+            self._jobs.set_status(job_id, "processing", 70, "Transcribiendo...")
+
+            extracted_lrc = self._transcription.transcribe_lrc(vocals_bytes, title or "", artist or "")
+            preview = build_preview(extracted_lrc)
+
+            song_record = SongRecord(
+                job_id=job_id,
+                title=title.strip() if title else Path(filename).stem,
+                artist=artist.strip() if artist else "Artista desconocido",
+                bpm=0,
+                duration=duration,
+                lrc_preview=preview,
+                lrc=extracted_lrc,
+                tags=normalize_tags(tags),
+                video_url=f"/uploads/{job_id}/{filename}",
+                instrumental_url=f"/files/{job_id}/no_vocals.wav",
+            )
+
+            self._songs.insert_song(song_record)
+            song_public = to_public(song_record)
+            self._jobs.set_status(job_id, "completed", 100, "Completado", song_public)
+
+            return {
+                "job_id": job_id,
+                "download_url": song_record.instrumental_url or "",
+                "song": song_public.model_dump(),
+            }
+        except Exception as exc:
+            message = str(exc).strip() or "Error durante el procesamiento."
+            logger.error("Job %s failed: %s", job_id, message)
+            self._jobs.set_status(job_id, "error", 0, message)
+            return {
+                "job_id": job_id,
+                "status": "error",
+                "message": message,
+            }
 
     def get_status(self, job_id: str) -> dict[str, object]:
         status = self._jobs.get_status(job_id)

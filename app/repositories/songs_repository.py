@@ -22,12 +22,12 @@ class SongsRepository:
             self._db.table("songs")
             .select("*")
             .eq("job_id", job_id)
-            .single()
             .execute()
         )
-        if not response.data:
+        rows = response.data or []
+        if not rows:
             return None
-        return SongRecord.model_validate(response.data)
+        return SongRecord.model_validate(rows[0])
 
     def insert_song(self, song: SongRecord) -> None:
         payload = song.model_dump()

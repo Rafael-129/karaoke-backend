@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.core.dependencies import get_jobs_service, get_storage_service
@@ -18,6 +18,7 @@ router = APIRouter()
 
 @router.post("/separate")
 async def separate(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
     artist: Optional[str] = Form(None),
@@ -43,6 +44,7 @@ async def separate(
             job_id=job_id,
             chunk_index=chunk_index,
             total_chunks=total_chunks,
+            background_tasks=background_tasks,
         )
     except HTTPException:
         raise
