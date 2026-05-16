@@ -103,6 +103,5 @@ jobs:
               --resource-group "$RESOURCE_GROUP" \
               --src-path release.zip \
               --type zip \
-              --build-remote true \
               --async false \
               --timeout 600
