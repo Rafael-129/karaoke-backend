@@ -90,6 +90,9 @@ jobs:
         uses: azure/cli@v2
         with:
           inlineScript: |
+            echo "=== Archivos disponibles ==="
+            ls -la
+            echo "=== Deployando ==="
             RESOURCE_GROUP=$(az webapp list --query "[?name=='backendkaraoke'].resourceGroup | [0]" -o tsv)
             az webapp deploy \
               --name backendkaraoke \
