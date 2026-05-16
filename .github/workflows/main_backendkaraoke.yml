@@ -96,7 +96,7 @@ jobs:
         with:
           inlineScript: |
             echo "=== Contenido del zip ==="
-            unzip -l release.zip
+            python3 -c "import zipfile; z=zipfile.ZipFile('release.zip'); [print(f) for f in z.namelist()]"
             echo "=== Deployando ==="
             RESOURCE_GROUP=$(az webapp list --query "[?name=='backendkaraoke'].resourceGroup | [0]" -o tsv)
             az webapp deploy \
