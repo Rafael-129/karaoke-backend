@@ -81,10 +81,20 @@ jobs:
                 SCM_DO_BUILD_DURING_DEPLOYMENT=true \
                 ENABLE_ORYX_BUILD=true \
                 WEBSITE_RUN_FROM_PACKAGE=0
+            echo "Esperando estabilizacion..."
+            sleep 30
+            az webapp restart --name "$APP_NAME" --resource-group "$RESOURCE_GROUP"
+            sleep 20
 
       - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v3
+        uses: azure/cli@v2
         with:
-          app-name: 'backendkaraoke'
-          slot-name: 'Production'
-          package: release.zip   # ← ZIP en vez de directorio
+          inlineScript: |
+            RESOURCE_GROUP=$(az webapp list --query "[?name=='backendkaraoke'].resourceGroup | [0]" -o tsv)
+            az webapp deploy \
+              --name backendkaraoke \
+              --resource-group "$RESOURCE_GROUP" \
+              --src-path release.zip \
+              --type zip \
+              --async false \
+              --timeout 600
