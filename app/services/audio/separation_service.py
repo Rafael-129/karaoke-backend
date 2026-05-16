@@ -83,9 +83,8 @@ class AudioSeparationService:
             if max_val > 1.0:
                 instrumental_np = instrumental_np / max_val
 
-            instrumental_buffer = io.BytesIO()
-            sf.write(instrumental_buffer, instrumental_np.T, model.samplerate, format="WAV")
-            instrumental_bytes = instrumental_buffer.getvalue()
+            # Convert instrumental to MP3 bytes to stay under Supabase limits
+            instrumental_bytes = self._conversion.audio_to_mp3_bytes(instrumental_np.T, model.samplerate)
 
             vocals_bytes = file_bytes
             if "vocals" in model.sources:

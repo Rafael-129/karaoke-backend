@@ -55,14 +55,25 @@ class TranscriptionService:
             lrc_lines = []
             for segment in result["segments"]:
                 start = segment["start"]
-                text = " ".join(segment["text"].strip().split())
-                if not text:
-                    continue
+                m = int(start // 60)
+                s = int(start % 60)
+                c = int((start % 1) * 100)
+                
+                line_text = ""
+                if "words" in segment and segment["words"]:
+                    for w in segment["words"]:
+                        ws = w["start"]
+                        wm = int(ws // 60)
+                        ws_s = int(ws % 60)
+                        wc = int((ws % 1) * 100)
+                        word_clean = w["word"].strip()
+                        if word_clean:
+                            line_text += f"<{wm:02d}:{ws_s:02d}.{wc:02d}> {word_clean} "
+                else:
+                    line_text = segment["text"].strip()
 
-                minutes = int(start // 60)
-                seconds = int(start % 60)
-                centiseconds = int((start % 1) * 100)
-                lrc_lines.append(f"[{minutes:02d}:{seconds:02d}.{centiseconds:02d}] {text}")
+                if line_text.strip():
+                    lrc_lines.append(f"[{m:02d}:{s:02d}.{c:02d}] {line_text.strip()}")
 
             return "\n".join(lrc_lines)
         except Exception as exc:

@@ -70,6 +70,10 @@ def get_file(job_id: str, filename: str) -> StreamingResponse:
     try:
         safe_name = Path(filename).name
         payload = get_storage_service().download_output(job_id, safe_name)
-        return StreamingResponse(io.BytesIO(payload), media_type="audio/wav")
+        
+        ext = Path(safe_name).suffix.lower()
+        media_type = "audio/mpeg" if ext == ".mp3" else "audio/wav"
+        
+        return StreamingResponse(io.BytesIO(payload), media_type=media_type)
     except Exception:
         raise HTTPException(status_code=404, detail="File not found.")

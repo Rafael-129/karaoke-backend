@@ -4,6 +4,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
+import numpy as np
 import soundfile as sf
 import torch
 from demucs.audio import convert_audio
@@ -46,6 +47,18 @@ class AudioConversionService:
         wav = torch.from_numpy(data.T)
         wav = convert_audio(wav, sr, target_samplerate, target_channels)
         return wav
+
+    def audio_to_mp3_bytes(self, audio_np: np.ndarray, sr: int) -> bytes:
+        temp_wav = self._settings.data_dir / f"temp-mp3-input-{uuid.uuid4().hex}.wav"
+        temp_mp3 = self._settings.data_dir / f"temp-mp3-output-{uuid.uuid4().hex}.mp3"
+        try:
+            sf.write(str(temp_wav), audio_np, sr, format="WAV")
+            cmd = ["ffmpeg", "-y", "-i", str(temp_wav), "-codec:a", "libmp3lame", "-qscale:a", "2", str(temp_mp3)]
+            subprocess.run(cmd, capture_output=True, check=True)
+            return temp_mp3.read_bytes()
+        finally:
+            temp_wav.unlink(missing_ok=True)
+            temp_mp3.unlink(missing_ok=True)
 
     def probe_duration_label(self, file_bytes: bytes, filename: str) -> str:
         temp_path = self._settings.data_dir / f"temp-{uuid.uuid4().hex}-{filename}"

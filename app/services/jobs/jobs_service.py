@@ -218,7 +218,7 @@ class JobsService:
 
             instrumental_bytes, vocals_bytes = self._separation.separate(file_bytes, filename, job_id)
 
-            self._storage.upload_instrumental(job_id, "no_vocals.wav", instrumental_bytes)
+            self._storage.upload_instrumental(job_id, "no_vocals.mp3", instrumental_bytes)
             self._jobs.set_status(job_id, "processing", 70, "Transcribiendo...")
 
             extracted_lrc = self._transcription.transcribe_lrc(vocals_bytes, title or "", artist or "")
@@ -234,7 +234,7 @@ class JobsService:
                 lrc=extracted_lrc,
                 tags=normalize_tags(tags),
                 video_url=f"/uploads/{job_id}/{filename}",
-                instrumental_url=f"/files/{job_id}/no_vocals.wav",
+                instrumental_url=f"/files/{job_id}/no_vocals.mp3",
             )
 
             self._songs.insert_song(song_record)
