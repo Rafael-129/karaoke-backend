@@ -95,8 +95,9 @@ jobs:
         uses: azure/cli@v2
         with:
           inlineScript: |
-            echo "=== Archivos disponibles ==="
-            ls -la
+            echo "=== Contenido del zip ==="
+            unzip -l release.zip
+            echo "=== Deployando ==="
             RESOURCE_GROUP=$(az webapp list --query "[?name=='backendkaraoke'].resourceGroup | [0]" -o tsv)
             az webapp deploy \
               --name backendkaraoke \
@@ -104,4 +105,8 @@ jobs:
               --src-path release.zip \
               --type zip \
               --async false \
-              --timeout 600
+              --timeout 600 || true
+            echo "=== Log del deploy ==="
+            az webapp log deployment show \
+              --name backendkaraoke \
+              --resource-group "$RESOURCE_GROUP"
