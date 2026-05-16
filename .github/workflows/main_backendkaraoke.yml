@@ -92,6 +92,8 @@ jobs:
           inlineScript: |
             echo "=== Archivos disponibles ==="
             ls -la
+            echo "=== Contenido del zip ==="
+            unzip -l release.zip | head -50
             echo "=== Deployando ==="
             RESOURCE_GROUP=$(az webapp list --query "[?name=='backendkaraoke'].resourceGroup | [0]" -o tsv)
             az webapp deploy \
@@ -99,5 +101,6 @@ jobs:
               --resource-group "$RESOURCE_GROUP" \
               --src-path release.zip \
               --type zip \
+              --build-remote true \
               --async false \
               --timeout 600
