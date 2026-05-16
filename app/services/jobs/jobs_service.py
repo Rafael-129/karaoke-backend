@@ -210,6 +210,20 @@ class JobsService:
         tags: str,
     ) -> dict[str, object]:
         try:
+            # 1. Create immediate placeholder in DB
+            self._jobs.set_status(job_id, "processing", 5, "Iniciando...")
+            
+            placeholder_record = SongRecord(
+                job_id=job_id,
+                title=title.strip() if title else Path(filename).stem,
+                artist=artist.strip() if artist else "Artista desconocido",
+                tags=normalize_tags(tags),
+                status="processing",
+                video_url=f"/uploads/{job_id}/{filename}",
+            )
+            self._songs.insert_song(placeholder_record)
+
+            # 2. Start heavy lifting
             self._jobs.set_status(job_id, "processing", 10, "Subiendo...")
             duration = self._conversion.probe_duration_label(file_bytes, filename)
 
@@ -224,20 +238,22 @@ class JobsService:
             extracted_lrc = self._transcription.transcribe_lrc(vocals_bytes, title or "", artist or "")
             preview = build_preview(extracted_lrc)
 
+            # 3. Update record to completed
             song_record = SongRecord(
                 job_id=job_id,
-                title=title.strip() if title else Path(filename).stem,
-                artist=artist.strip() if artist else "Artista desconocido",
+                title=placeholder_record.title,
+                artist=placeholder_record.artist,
                 bpm=0,
                 duration=duration,
                 lrc_preview=preview,
                 lrc=extracted_lrc,
-                tags=normalize_tags(tags),
-                video_url=f"/uploads/{job_id}/{filename}",
+                tags=placeholder_record.tags,
+                video_url=placeholder_record.video_url,
                 instrumental_url=f"/files/{job_id}/no_vocals.mp3",
+                status="completed",
             )
 
-            self._songs.insert_song(song_record)
+            self._songs.update_song(job_id, song_record)
             song_public = to_public(song_record)
             self._jobs.set_status(job_id, "completed", 100, "Completado", song_public)
 
@@ -249,6 +265,16 @@ class JobsService:
         except Exception as exc:
             message = str(exc).strip() or "Error durante el procesamiento."
             logger.error("Job %s failed: %s", job_id, message)
+            
+            # Update DB to error status if possible
+            try:
+                error_record = self._songs.get_song(job_id)
+                if error_record:
+                    error_record.status = "error"
+                    self._songs.update_song(job_id, error_record)
+            except Exception:
+                pass
+
             self._jobs.set_status(job_id, "error", 0, message)
             return {
                 "job_id": job_id,
