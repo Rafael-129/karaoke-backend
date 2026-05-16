@@ -96,22 +96,19 @@ jobs:
         with:
           inlineScript: |
             RESOURCE_GROUP=$(az webapp list --query "[?name=='backendkaraoke'].resourceGroup | [0]" -o tsv)
-            
-            echo "=== Deteniendo app ==="
-            az webapp stop --name backendkaraoke --resource-group "$RESOURCE_GROUP"
-            sleep 15
-            
-            echo "=== Iniciando app ==="
-            az webapp start --name backendkaraoke --resource-group "$RESOURCE_GROUP"
-            sleep 30
-            
-            echo "=== Deployando ==="
-            az webapp deploy \
+
+            echo "=== Verificando runtime ==="
+            az webapp config set \
               --name backendkaraoke \
               --resource-group "$RESOURCE_GROUP" \
-              --src-path release.zip \
-              --type zip \
-              --clean true \
-              --restart true \
-              --async false \
-              --timeout 600
+              --linux-fx-version "PYTHON|3.10"
+
+            echo "=== Reiniciando ==="
+            az webapp restart --name backendkaraoke --resource-group "$RESOURCE_GROUP"
+            sleep 30
+
+            echo "=== Deployando via zipdeploy ==="
+            az webapp deployment source config-zip \
+              --name backendkaraoke \
+              --resource-group "$RESOURCE_GROUP" \
+              --src release.zip
