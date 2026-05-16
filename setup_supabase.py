@@ -18,7 +18,7 @@ SUPABASE_SECRET = os.getenv("SUPABASE_SECRET", "").strip()
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
 
 if not SUPABASE_URL or (not SUPABASE_KEY and not SUPABASE_SECRET):
-    print("❌ Error: SUPABASE_URL and SUPABASE_KEY or SUPABASE_SECRET must be set in .env.local")
+    print("[ERROR] Error: SUPABASE_URL and SUPABASE_KEY or SUPABASE_SECRET must be set in .env.local")
     exit(1)
 
 # Use service role (admin) for setup
@@ -40,9 +40,13 @@ CREATE TABLE IF NOT EXISTS songs (
     tags TEXT[] DEFAULT '{"subido"}',
     video_url TEXT,
     instrumental_url TEXT,
+    status TEXT DEFAULT 'completed',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Add status column if it doesn't exist (for existing tables)
+ALTER TABLE songs ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'completed';
 
 -- Create indexes for better query performance
 CREATE INDEX IF NOT EXISTS idx_songs_job_id ON songs(job_id);
@@ -66,17 +70,17 @@ CREATE POLICY "Authenticated delete" ON songs
     FOR DELETE USING (true);
 """
 
-print("🔧 Setting up Supabase database...")
+print("[SETUP] Setting up Supabase database...")
 
 try:
     # Execute the SQL
     result = supabase.rpc("sql", {"query": CREATE_TABLE_SQL}).execute()
-    print("✅ Supabase setup completed successfully!")
+    print("[OK] Supabase setup completed successfully!")
     print("   - Created 'songs' table")
     print("   - Created indexes for performance")
     print("   - Enabled RLS with public read + auth write policies")
 except Exception as e:
-    print(f"❌ Setup Error: {str(e)}")
+    print(f"[ERROR] Setup Error: {str(e)}")
     print("\nAlternative: Use the Supabase SQL Editor to run SUPABASE_SETUP.sql manually:")
     print("1. Go to https://app.supabase.com → SQL Editor")
     print("2. Click 'New Query'")
@@ -84,6 +88,6 @@ except Exception as e:
     print("4. Click 'Run'")
     exit(1)
 
-print("\n✅ Database is ready! You can now:")
+print("\n[OK] Database is ready! You can now:")
 print("   1. Start the backend: python -m uvicorn app.main:app --reload")
 print("   2. Upload songs from the frontend: http://localhost:3000")
