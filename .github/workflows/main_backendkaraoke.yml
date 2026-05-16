@@ -39,8 +39,7 @@ jobs:
             --exclude "*/__pycache__/*" \
             --exclude "*.pyc" \
             --exclude "test_audio*" \
-            --exclude "videos/*" \
-            --exclude "Dockerfile"
+            --exclude "videos/*"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -75,40 +74,42 @@ jobs:
             APP_NAME="backendkaraoke"
             RESOURCE_GROUP=$(az webapp list --query "[?name=='$APP_NAME'].resourceGroup | [0]" -o tsv)
             echo "App: $APP_NAME / RG: $RESOURCE_GROUP"
+
+            echo "=== Eliminando WEBSITE_RUN_FROM_PACKAGE ==="
+            az webapp config appsettings delete \
+              --name "$APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --setting-names WEBSITE_RUN_FROM_PACKAGE
+
+            echo "=== Seteando settings ==="
             az webapp config appsettings set \
               --name "$APP_NAME" \
               --resource-group "$RESOURCE_GROUP" \
               --settings \
                 SCM_DO_BUILD_DURING_DEPLOYMENT=true \
-                ENABLE_ORYX_BUILD=true \
-                WEBSITE_RUN_FROM_PACKAGE=0
+                ENABLE_ORYX_BUILD=true
+
             az webapp config set \
               --name "$APP_NAME" \
               --resource-group "$RESOURCE_GROUP" \
               --startup-file "uvicorn app.main:app --host 0.0.0.0 --port 8000"
-            echo "Esperando estabilizacion..."
-            sleep 30
-            az webapp restart --name "$APP_NAME" --resource-group "$RESOURCE_GROUP"
+
+            echo "=== Stop/Start para limpiar lock ==="
+            az webapp stop --name "$APP_NAME" --resource-group "$RESOURCE_GROUP"
             sleep 20
+            az webapp start --name "$APP_NAME" --resource-group "$RESOURCE_GROUP"
+            sleep 30
 
       - name: Deploy to Azure Web App
         uses: azure/cli@v2
         with:
           inlineScript: |
             RESOURCE_GROUP=$(az webapp list --query "[?name=='backendkaraoke'].resourceGroup | [0]" -o tsv)
-
-            echo "=== Verificando runtime ==="
-            az webapp config set \
+            az webapp deploy \
               --name backendkaraoke \
               --resource-group "$RESOURCE_GROUP" \
-              --linux-fx-version "PYTHON|3.10"
-
-            echo "=== Reiniciando ==="
-            az webapp restart --name backendkaraoke --resource-group "$RESOURCE_GROUP"
-            sleep 30
-
-            echo "=== Deployando via zipdeploy ==="
-            az webapp deployment source config-zip \
-              --name backendkaraoke \
-              --resource-group "$RESOURCE_GROUP" \
-              --src release.zip
+              --src-path release.zip \
+              --type zip \
+              --clean true \
+              --async false \
+              --timeout 600
