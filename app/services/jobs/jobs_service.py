@@ -172,8 +172,25 @@ class JobsService:
 
         require_title_artist(title, artist)
 
+        # 1. Create immediate placeholder in DB BEFORE background task
+        placeholder_record = SongRecord(
+            job_id=chunk_result.job_id,
+            title=title.strip() if title else Path(chunk_result.filename).stem,
+            artist=artist.strip() if artist else "Artista desconocido",
+            tags=normalize_tags(tags),
+            status="processing",
+            video_url=f"/uploads/{chunk_result.job_id}/{chunk_result.filename}",
+        )
+        self._songs.insert_song(placeholder_record)
+
+        # 2. Upload original file IMMEDIATELY so it's not 404 when clicking the card
+        try:
+            self._storage.upload_original(chunk_result.job_id, chunk_result.filename, chunk_result.file_bytes)
+        except Exception as e:
+            logger.error("Failed to upload original file for job %s: %s", chunk_result.job_id, e)
+
         if background_tasks is not None:
-            self._jobs.set_status(chunk_result.job_id, "processing", 5, "En cola...")
+            self._jobs.set_status(chunk_result.job_id, "processing", 10, "En cola...")
             background_tasks.add_task(
                 self._process_upload,
                 job_id=chunk_result.job_id,
@@ -186,8 +203,7 @@ class JobsService:
             return {
                 "job_id": chunk_result.job_id,
                 "status": "processing",
-                "progress": 5,
-                "message": "Procesando...",
+                "message": "Upload complete, processing started.",
             }
 
         return self._process_upload(
@@ -210,11 +226,9 @@ class JobsService:
         tags: str,
     ) -> dict[str, object]:
         try:
-            self._jobs.set_status(job_id, "processing", 10, "Subiendo...")
+            # 2. Start heavy lifting (placeholder and original file already exist)
+            self._jobs.set_status(job_id, "processing", 15, "Separando audio...")
             duration = self._conversion.probe_duration_label(file_bytes, filename)
-
-            self._storage.upload_original(job_id, filename, file_bytes)
-            self._jobs.set_status(job_id, "processing", 35, "Separando audio...")
 
             instrumental_bytes, vocals_bytes = self._separation.separate(file_bytes, filename, job_id)
 
@@ -224,6 +238,7 @@ class JobsService:
             extracted_lrc = self._transcription.transcribe_lrc(vocals_bytes, title or "", artist or "")
             preview = build_preview(extracted_lrc)
 
+            # 3. Update record to completed
             song_record = SongRecord(
                 job_id=job_id,
                 title=title.strip() if title else Path(filename).stem,
@@ -235,9 +250,10 @@ class JobsService:
                 tags=normalize_tags(tags),
                 video_url=f"/uploads/{job_id}/{filename}",
                 instrumental_url=f"/files/{job_id}/no_vocals.mp3",
+                status="completed",
             )
 
-            self._songs.insert_song(song_record)
+            self._songs.update_song(job_id, song_record)
             song_public = to_public(song_record)
             self._jobs.set_status(job_id, "completed", 100, "Completado", song_public)
 
@@ -249,6 +265,16 @@ class JobsService:
         except Exception as exc:
             message = str(exc).strip() or "Error durante el procesamiento."
             logger.error("Job %s failed: %s", job_id, message)
+            
+            # Update DB to error status if possible
+            try:
+                error_record = self._songs.get_song(job_id)
+                if error_record:
+                    error_record.status = "error"
+                    self._songs.update_song(job_id, error_record)
+            except Exception:
+                pass
+
             self._jobs.set_status(job_id, "error", 0, message)
             return {
                 "job_id": job_id,

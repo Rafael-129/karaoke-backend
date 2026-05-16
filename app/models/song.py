@@ -16,6 +16,7 @@ class SongRecord(BaseModel):
     tags: list[str] = Field(default_factory=list)
     video_url: str | None = None
     instrumental_url: str | None = None
+    status: str = "completed"
 
 
 class SongPublic(BaseModel):
@@ -29,6 +30,7 @@ class SongPublic(BaseModel):
     tags: list[str] = Field(default_factory=list)
     videoUrl: str | None = None
     instrumentalUrl: str | None = None
+    status: str = "completed"
 
 
 def to_public(song: SongRecord) -> SongPublic:
@@ -43,4 +45,5 @@ def to_public(song: SongRecord) -> SongPublic:
         tags=song.tags,
         videoUrl=song.video_url,
         instrumentalUrl=song.instrumental_url,
+        status=song.status,
     )

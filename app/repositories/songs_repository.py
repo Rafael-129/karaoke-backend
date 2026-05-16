@@ -33,6 +33,10 @@ class SongsRepository:
         payload = song.model_dump()
         self._db.table("songs").insert(payload).execute()
 
+    def update_song(self, job_id: str, song: SongRecord) -> None:
+        payload = song.model_dump()
+        self._db.table("songs").update(payload).eq("job_id", job_id).execute()
+
     def delete_song(self, job_id: str) -> SongRecord | None:
         song = self.get_song(job_id)
         if not song:
