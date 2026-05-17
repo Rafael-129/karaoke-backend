@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import io
-from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 from demucs.apply import apply_model
-from demucs.pretrained import get_model
+
+from app.services.audio.model_manager import get_demucs_model
 
 from app.core.config import Settings
 from app.services.audio.conversion_service import AudioConversionService
@@ -15,12 +15,7 @@ from app.services.audio.conversion_service import AudioConversionService
 # Demucs-based separation logic.
 
 
-@lru_cache(maxsize=1)
-def _load_demucs_model(model_name: str, device: str):
-    model = get_model(model_name)
-    model.to(device)
-    model.eval()
-    return model
+
 
 
 class AudioSeparationService:
@@ -29,7 +24,7 @@ class AudioSeparationService:
         self._conversion = conversion_service
 
     def separate(self, file_bytes: bytes, original_filename: str, job_id: str) -> tuple[bytes, bytes]:
-        model = _load_demucs_model(self._settings.demucs_model, self._settings.demucs_device)
+        model = get_demucs_model(self._settings.demucs_model, self._settings.demucs_device)
         original_suffix = Path(original_filename).suffix.lower() or ".bin"
         temp_input = self._settings.data_dir / f"temp-input-{job_id}{original_suffix}"
         temp_wav = self._settings.data_dir / f"temp-input-{job_id}.wav"

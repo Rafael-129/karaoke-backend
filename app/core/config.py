@@ -24,10 +24,12 @@ class Settings:
     demucs_model: str
     demucs_device: str
     whisper_model: str
+    whisper_device: str
     whisper_language: str
     whisper_beam_size: int
     whisper_best_of: int
     whisper_download_root: Path
+    preload_models: bool
     app_title: str = "karaoke-backend"
 
 
@@ -45,6 +47,11 @@ def _int_env(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name, str(default)).strip().lower()
+    return raw in ("1", "true", "yes", "on")
 
 
 def _ensure_directories(settings: Settings) -> None:
@@ -69,16 +76,19 @@ def get_settings() -> Settings:
     uploads_bucket = os.getenv("UPLOADS_BUCKET", "uploads").strip() or "uploads"
     outputs_bucket = os.getenv("OUTPUTS_BUCKET", "outputs").strip() or "outputs"
 
-    demucs_model = os.getenv("DEMUCS_MODEL", "htdemucs").strip() or "htdemucs"
+    demucs_model = os.getenv("DEMUCS_MODEL", "htdemucs_6s").strip() or "htdemucs_6s"
     demucs_device = os.getenv("DEMUCS_DEVICE", "cpu").strip() or "cpu"
 
-    whisper_model = os.getenv("WHISPER_MODEL", "medium").strip() or "medium"
+    # Prefer a smaller Whisper model by default for low-memory deploys.
+    whisper_model = os.getenv("WHISPER_MODEL", "tiny").strip() or "tiny"
+    whisper_device = os.getenv("WHISPER_DEVICE", "cpu").strip() or "cpu"
     whisper_language = os.getenv("WHISPER_LANGUAGE", "es").strip() or "es"
     whisper_beam_size = _int_env("WHISPER_BEAM_SIZE", 5)
     whisper_best_of = _int_env("WHISPER_BEST_OF", 5)
     whisper_download_root = Path(
         os.getenv("WHISPER_DOWNLOAD_ROOT", str(data_dir / "whisper-models"))
     )
+    preload_models = _bool_env("PRELOAD_MODELS", False)
 
     settings = Settings(
         app_root=app_root,
@@ -92,10 +102,12 @@ def get_settings() -> Settings:
         demucs_model=demucs_model,
         demucs_device=demucs_device,
         whisper_model=whisper_model,
+        whisper_device=whisper_device,
         whisper_language=whisper_language,
         whisper_beam_size=whisper_beam_size,
         whisper_best_of=whisper_best_of,
         whisper_download_root=whisper_download_root,
+        preload_models=preload_models,
     )
     _ensure_directories(settings)
     return settings

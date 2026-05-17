@@ -2,23 +2,14 @@ from __future__ import annotations
 
 import logging
 import uuid
-from functools import lru_cache
 from pathlib import Path
 
-import whisper
-
 from app.core.config import Settings
+from app.services.audio.model_manager import get_whisper_model
 
 # Whisper transcription utilities.
 
 logger = logging.getLogger(__name__)
-
-
-@lru_cache(maxsize=1)
-def _load_whisper_model(model_name: str, download_root: str):
-    return whisper.load_model(model_name, download_root=download_root)
-
-
 class TranscriptionService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -28,9 +19,10 @@ class TranscriptionService:
         try:
             temp_path.write_bytes(audio_bytes)
             self._settings.whisper_download_root.mkdir(parents=True, exist_ok=True)
-            model = _load_whisper_model(
+            model = get_whisper_model(
                 self._settings.whisper_model,
                 str(self._settings.whisper_download_root),
+                device=self._settings.whisper_device,
             )
 
             context_prompt = "Transcribe la letra de una cancion en espanol. "

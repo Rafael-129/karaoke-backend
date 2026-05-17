@@ -32,10 +32,59 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def on_startup() -> None:
         get_storage_service().ensure_buckets()
+        # Optionally preload ML models into memory (controlled by PRELOAD_MODELS).
+        try:
+            from app.services.audio.model_manager import preload_models
+
+            if settings.preload_models:
+                preload_models(settings)
+        except Exception:
+            # Keep startup resilient if model preload fails or Demucs/Whisper not installed.
+            pass
 
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/internal/models")
+    def internal_models() -> dict:
+        """Returns configured model names and whether they're loaded in this process.
+
+        Notes: This endpoint intentionally does NOT load models if they're not
+        already cached. It inspects the lru_cache statistics to determine
+        whether a model is present in the cache.
+        """
+        from app.services.audio import model_manager
+
+        whisper_cfg = {
+            "configured": settings.whisper_model,
+            "device": settings.whisper_device,
+            "loaded": bool(getattr(model_manager.get_whisper_model, "cache_info")().currsize),
+        }
+
+        demucs_cfg = {
+            "configured": settings.demucs_model,
+            "device": settings.demucs_device,
+            "loaded": bool(getattr(model_manager.get_demucs_model, "cache_info")().currsize),
+        }
+
+        # If models are loaded, return a small identifying string; do NOT
+        # call loaders if not loaded to avoid allocating memory here.
+        if whisper_cfg["loaded"]:
+            try:
+                model = model_manager.get_whisper_model(settings.whisper_model, str(settings.whisper_download_root), device=settings.whisper_device)
+                whisper_cfg["repr"] = type(model).__name__
+            except Exception:
+                whisper_cfg["repr"] = "(error reading instance)"
+
+        if demucs_cfg["loaded"]:
+            try:
+                model = model_manager.get_demucs_model(settings.demucs_model, device=settings.demucs_device)
+                demucs_cfg["repr"] = type(model).__name__
+            except Exception:
+                demucs_cfg["repr"] = "(error reading instance)"
+
+        return {"whisper": whisper_cfg, "demucs": demucs_cfg}
 
     return app
 
