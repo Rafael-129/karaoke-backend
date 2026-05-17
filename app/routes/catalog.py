@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from app.core.dependencies import get_songs_repository, get_storage_service
+from app.core.dependencies import get_songs_repository, get_storage_service, get_jobs_service
 from app.models.song import to_public
 
 # Catalog endpoints.
@@ -30,6 +30,16 @@ def get_catalog_song(song_id: str) -> dict[str, Any]:
     if not song:
         raise HTTPException(status_code=404, detail="Song not found.")
     return to_public(song).model_dump()
+
+
+@router.post("/catalog/{song_id}/separate")
+def separate_song_instrumental(song_id: str) -> dict[str, str]:
+    try:
+        instrumental_url = get_jobs_service().separate_instrumental_on_demand(song_id)
+        return {"status": "ok", "instrumental_url": instrumental_url}
+    except Exception as exc:
+        logger.error("On-demand separation failed for song %s: %s", song_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.delete("/catalog/{song_id}")

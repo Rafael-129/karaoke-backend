@@ -226,19 +226,40 @@ class JobsService:
         tags: str,
     ) -> dict[str, object]:
         try:
-            # 2. Start heavy lifting (placeholder and original file already exist)
-            self._jobs.set_status(job_id, "processing", 15, "Separando audio...")
+            # 2. Start fast processing (just extracting audio and transcribing)
+            self._jobs.set_status(job_id, "processing", 15, "Preparando audio...")
             duration = self._conversion.probe_duration_label(file_bytes, filename)
 
-            instrumental_bytes, vocals_bytes = self._separation.separate(file_bytes, filename, job_id)
+            # Extract the raw WAV bytes of the original audio track from the video
+            original_suffix = Path(filename).suffix.lower() or ".bin"
+            temp_input = self._settings.data_dir / f"temp-extract-{job_id}{original_suffix}"
+            temp_wav = self._settings.data_dir / f"temp-extract-{job_id}.wav"
+            temp_input.write_bytes(file_bytes)
+            
+            self._jobs.set_status(job_id, "processing", 25, "Extrayendo audio...")
+            try:
+                self._conversion.convert_to_wav(temp_input, temp_wav)
+                audio_bytes = temp_wav.read_bytes()
+            except Exception as e:
+                logger.error("FFmpeg extraction failed, fallback to raw upload bytes: %s", e)
+                audio_bytes = file_bytes
+            finally:
+                temp_input.unlink(missing_ok=True)
+                temp_wav.unlink(missing_ok=True)
 
-            self._storage.upload_instrumental(job_id, "no_vocals.mp3", instrumental_bytes)
-            self._jobs.set_status(job_id, "processing", 70, "Transcribiendo...")
-
-            extracted_lrc = self._transcription.transcribe_lrc(vocals_bytes, title or "", artist or "")
+            self._jobs.set_status(job_id, "processing", 45, "Transcribiendo...")
+            extracted_lrc = self._transcription.transcribe_lrc(audio_bytes, title or "", artist or "")
             preview = build_preview(extracted_lrc)
 
-            # 3. Update record to completed
+            self._jobs.set_status(job_id, "processing", 65, "Separando voz...")
+            instrumental_bytes, _ = self._separation.separate(file_bytes, filename, job_id)
+
+            self._jobs.set_status(job_id, "processing", 80, "Subiendo instrumental...")
+            self._storage.upload_instrumental(job_id, "no_vocals.mp3", instrumental_bytes)
+
+            self._jobs.set_status(job_id, "processing", 90, "Guardando resultados...")
+
+            # 3. Update record to completed without instrumental track initially
             song_record = SongRecord(
                 job_id=job_id,
                 title=title.strip() if title else Path(filename).stem,
@@ -259,7 +280,7 @@ class JobsService:
 
             return {
                 "job_id": job_id,
-                "download_url": song_record.instrumental_url or "",
+                "download_url": "",
                 "song": song_public.model_dump(),
             }
         except Exception as exc:
@@ -281,6 +302,40 @@ class JobsService:
                 "status": "error",
                 "message": message,
             }
+
+    def separate_instrumental_on_demand(self, job_id: str) -> str:
+        """
+        Runs Demucs on-demand for a completed song that doesn't have an instrumental yet,
+        uploads it to storage, updates the DB, and returns the URL.
+        """
+        song = self._songs.get_song(job_id)
+        if not song:
+            raise ValueError("Song not found.")
+
+        if song.instrumental_url:
+            return song.instrumental_url
+
+        # Retrieve the original file name from the video_url (e.g. /uploads/job_id/filename)
+        original_filename = Path(song.video_url).name
+
+        # Download original video/audio from storage to process it
+        logger.info("Downloading original file for job %s to separate on-demand", job_id)
+        file_bytes = self._storage.download_upload(job_id, original_filename)
+
+        # Run Demucs audio separation
+        logger.info("Starting audio separation for job %s (on-demand)", job_id)
+        instrumental_bytes, _ = self._separation.separate(file_bytes, original_filename, job_id)
+
+        # Upload the instrumental track
+        logger.info("Uploading instrumental track for job %s", job_id)
+        self._storage.upload_instrumental(job_id, "no_vocals.mp3", instrumental_bytes)
+
+        # Update DB record with the new instrumental URL
+        song.instrumental_url = f"/files/{job_id}/no_vocals.mp3"
+        self._songs.update_song(job_id, song)
+
+        logger.info("On-demand separation completed successfully for job %s", job_id)
+        return song.instrumental_url
 
     def get_status(self, job_id: str) -> dict[str, object]:
         status = self._jobs.get_status(job_id)
