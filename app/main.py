@@ -14,6 +14,13 @@ def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging()
 
+    # Override temporary directory to E: drive because C: drive is 100% full (0.00 GB free).
+    # This prevents Starlette's body parsing and SpooledTemporaryFile write failures.
+    import tempfile
+    temp_dir = settings.data_dir / "tmp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    tempfile.tempdir = str(temp_dir)
+
     app = FastAPI(title=settings.app_title)
     add_logging_middleware(app)
     add_error_handlers(app)
