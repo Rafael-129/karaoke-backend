@@ -23,8 +23,17 @@ class AudioSeparationService:
         self._settings = settings
         self._conversion = conversion_service
 
-    def separate(self, file_bytes: bytes, original_filename: str, job_id: str) -> tuple[bytes, bytes]:
-        model = get_demucs_model(self._settings.demucs_model, self._settings.demucs_device)
+    def separate(
+        self,
+        file_bytes: bytes,
+        original_filename: str,
+        job_id: str,
+        *,
+        model_name: str | None = None,
+        device: str | None = None,
+        mp3_quality: int = 2,
+    ) -> tuple[bytes, bytes]:
+        model = get_demucs_model(model_name or self._settings.demucs_model, device or self._settings.demucs_device)
         original_suffix = Path(original_filename).suffix.lower() or ".bin"
         temp_input = self._settings.data_dir / f"temp-input-{job_id}{original_suffix}"
         temp_wav = self._settings.data_dir / f"temp-input-{job_id}.wav"
@@ -79,7 +88,11 @@ class AudioSeparationService:
                 instrumental_np = instrumental_np / max_val
 
             # Convert instrumental to MP3 bytes to stay under Supabase limits
-            instrumental_bytes = self._conversion.audio_to_mp3_bytes(instrumental_np.T, model.samplerate)
+            instrumental_bytes = self._conversion.audio_to_mp3_bytes(
+                instrumental_np.T,
+                model.samplerate,
+                quality=mp3_quality,
+            )
 
             vocals_bytes = file_bytes
             if "vocals" in model.sources:

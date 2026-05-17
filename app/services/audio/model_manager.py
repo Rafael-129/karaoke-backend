@@ -11,7 +11,7 @@ from app.core.config import Settings
 logger = logging.getLogger(__name__)
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=8)
 def get_whisper_model(model_name: str, download_root: str, device: str = "cpu"):
     logger.info("Loading Whisper model '%s' (download_root=%s) on %s", model_name, download_root, device)
     # whisper.load_model handles download and returns a model instance.
@@ -24,7 +24,7 @@ def get_whisper_model(model_name: str, download_root: str, device: str = "cpu"):
     return model
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=8)
 def get_demucs_model(model_name: str, device: str = "cpu"):
     logger.info("Loading Demucs model '%s' on %s", model_name, device)
     model = get_demucs_pretrained(model_name)
@@ -50,3 +50,4 @@ def preload_models(settings: Settings) -> None:
         get_demucs_model(settings.demucs_model, device=settings.demucs_device)
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.error("Failed to preload Demucs model: %s", exc)
+

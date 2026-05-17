@@ -7,7 +7,7 @@ from app.core.dependencies import get_storage_service
 from app.core.logging import configure_logging
 from app.middleware.errors import add_error_handlers
 from app.middleware.logging import add_logging_middleware
-from app.routes import catalog, jobs, separate
+import os
 
 
 def create_app() -> FastAPI:
@@ -20,6 +20,27 @@ def create_app() -> FastAPI:
     temp_dir = settings.data_dir / "tmp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     tempfile.tempdir = str(temp_dir)
+
+    # Configure torch/hub/cache directories. Prefer explicit env vars (e.g. set in
+    # .env) so users can point caches to another drive (D:) with more space.
+    torch_home = os.getenv("TORCH_HOME") or str(settings.data_dir / ".torch")
+    xdg_cache = os.getenv("XDG_CACHE_HOME") or str(settings.data_dir / ".cache")
+
+    # Ensure directories exist and then set env vars so downstream imports
+    # (demucs/torch) write caches to these locations instead of the user's profile.
+    try:
+        os.makedirs(torch_home, exist_ok=True)
+        os.makedirs(xdg_cache, exist_ok=True)
+    except Exception:
+        # Best effort; if creation fails, fall back to not overriding env vars.
+        pass
+
+    os.environ.setdefault("TORCH_HOME", torch_home)
+    os.environ.setdefault("XDG_CACHE_HOME", xdg_cache)
+
+    # Import routes after environment/cache dirs are configured so any imports
+    # that trigger model downloads use the configured cache location.
+    from app.routes import catalog, jobs, separate
 
     app = FastAPI(title=settings.app_title)
     add_logging_middleware(app)

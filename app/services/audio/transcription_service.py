@@ -14,15 +14,27 @@ class TranscriptionService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-    def transcribe_lrc(self, audio_bytes: bytes, title: str = "", artist: str = "") -> str:
+    def transcribe_lrc(
+        self,
+        audio_bytes: bytes,
+        title: str = "",
+        artist: str = "",
+        *,
+        model_name: str | None = None,
+        device: str | None = None,
+        beam_size: int | None = None,
+        best_of: int | None = None,
+        temperature: float = 0.0,
+        use_word_timestamps: bool = True,
+    ) -> str:
         temp_path = self._settings.data_dir / f"temp-audio-{uuid.uuid4().hex}.wav"
         try:
             temp_path.write_bytes(audio_bytes)
             self._settings.whisper_download_root.mkdir(parents=True, exist_ok=True)
             model = get_whisper_model(
-                self._settings.whisper_model,
+                model_name or self._settings.whisper_model,
                 str(self._settings.whisper_download_root),
-                device=self._settings.whisper_device,
+                device=device or self._settings.whisper_device,
             )
 
             context_prompt = "Transcribe la letra de una cancion en espanol. "
@@ -36,11 +48,11 @@ class TranscriptionService:
                 task="transcribe",
                 verbose=False,
                 fp16=False,
-                temperature=0.0,
-                beam_size=self._settings.whisper_beam_size,
-                best_of=self._settings.whisper_best_of,
+                temperature=temperature,
+                beam_size=beam_size or self._settings.whisper_beam_size,
+                best_of=best_of or self._settings.whisper_best_of,
                 condition_on_previous_text=False,
-                word_timestamps=True,
+                word_timestamps=use_word_timestamps,
                 initial_prompt=context_prompt,
             )
 
@@ -52,7 +64,7 @@ class TranscriptionService:
                 c = int((start % 1) * 100)
                 
                 line_text = ""
-                if "words" in segment and segment["words"]:
+                if use_word_timestamps and "words" in segment and segment["words"]:
                     for w in segment["words"]:
                         ws = w["start"]
                         wm = int(ws // 60)
