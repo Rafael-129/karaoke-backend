@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import logging
+import os
+import shutil
+
 from fastapi import FastAPI
 
 from app.core.config import get_settings
@@ -7,7 +11,9 @@ from app.core.dependencies import get_storage_service
 from app.core.logging import configure_logging
 from app.middleware.errors import add_error_handlers
 from app.middleware.logging import add_logging_middleware
-import os
+
+
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -53,6 +59,13 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def on_startup() -> None:
         get_storage_service().ensure_buckets()
+        ffmpeg_path = shutil.which("ffmpeg")
+        if ffmpeg_path:
+            logger.info("ffmpeg detected at startup: %s", ffmpeg_path)
+        else:
+            logger.warning(
+                "ffmpeg was not found in PATH at startup. Video uploads will fail until the Railway image installs ffmpeg."
+            )
         # Optionally preload ML models into memory (controlled by PRELOAD_MODELS).
         try:
             from app.services.audio.model_manager import preload_models
