@@ -14,6 +14,16 @@ logger = logging.getLogger("app.request")
 class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         start = perf_counter()
+        
+        # Debug form parsing issues
+        if request.method == "POST" and "multipart/form-data" in request.headers.get("content-type", ""):
+            try:
+                # We do not consume the stream here if we are not careful, but let's try to parse or log headers first
+                logger.info("Content-Type: %s", request.headers.get("content-type"))
+                logger.info("Content-Length: %s", request.headers.get("content-length"))
+            except Exception as e:
+                logger.error("Error inspecting request headers: %s", e)
+
         response = await call_next(request)
         duration_ms = (perf_counter() - start) * 1000
         logger.info(
