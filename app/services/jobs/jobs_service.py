@@ -241,8 +241,10 @@ class JobsService:
                 self._conversion.convert_to_wav(temp_input, temp_wav)
                 audio_bytes = temp_wav.read_bytes()
             except Exception as e:
-                logger.error("FFmpeg extraction failed, fallback to raw upload bytes: %s", e)
-                audio_bytes = file_bytes
+                raise RuntimeError(
+                    "ffmpeg is required to extract audio from video uploads. "
+                    "Install ffmpeg in the Railway image (nixpacks aptPkgs) or upload a WAV/MP3 file."
+                ) from e
             finally:
                 temp_input.unlink(missing_ok=True)
                 temp_wav.unlink(missing_ok=True)
