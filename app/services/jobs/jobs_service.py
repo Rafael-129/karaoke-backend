@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -22,6 +23,34 @@ from app.services.storage.storage_service import StorageService
 # Orchestrates the upload -> separation -> transcription -> Supabase pipeline.
 
 logger = logging.getLogger(__name__)
+
+
+PROCESSING_PROFILES: dict[str, dict[str, object]] = {
+    "rapido": {
+        "whisper_model": "tiny",
+        "demucs_model": "htdemucs_6s",
+        "mp3_quality": 9,
+        "whisper_beam_size": 3,
+        "whisper_best_of": 3,
+        "word_timestamps": True,
+    },
+    "balanceado": {
+        "whisper_model": "base",
+        "demucs_model": "htdemucs",
+        "mp3_quality": 4,
+        "whisper_beam_size": 5,
+        "whisper_best_of": 5,
+        "word_timestamps": True,
+    },
+    "maxima_calidad": {
+        "whisper_model": "small",
+        "demucs_model": "htdemucs",
+        "mp3_quality": 0,
+        "whisper_beam_size": 8,
+        "whisper_best_of": 8,
+        "word_timestamps": False,
+    },
+}
 
 
 @dataclass
@@ -147,6 +176,9 @@ class JobsService:
         title: str | None,
         artist: str | None,
         tags: str,
+        processing_profile: str | None = None,
+        extract_lyrics: bool = True,
+        generate_instrumental: bool = True,
         job_id: str | None,
         chunk_index: int | None,
         total_chunks: int | None,
@@ -199,6 +231,9 @@ class JobsService:
                 title=title,
                 artist=artist,
                 tags=tags,
+                processing_profile=processing_profile,
+                extract_lyrics=extract_lyrics,
+                generate_instrumental=generate_instrumental,
             )
             return {
                 "job_id": chunk_result.job_id,
@@ -213,6 +248,9 @@ class JobsService:
             title=title,
             artist=artist,
             tags=tags,
+            processing_profile=processing_profile,
+            extract_lyrics=extract_lyrics,
+            generate_instrumental=generate_instrumental,
         )
 
     def _process_upload(
@@ -224,8 +262,34 @@ class JobsService:
         title: str | None,
         artist: str | None,
         tags: str,
+        processing_profile: str | None = None,
+        extract_lyrics: bool = True,
+        generate_instrumental: bool = True,
     ) -> dict[str, object]:
         try:
+            profile_key = (processing_profile or "balanceado").strip().lower()
+            profile = PROCESSING_PROFILES.get(profile_key, PROCESSING_PROFILES["balanceado"])
+            whisper_model = str(profile["whisper_model"])
+            demucs_model = str(profile["demucs_model"])
+            mp3_quality = int(profile["mp3_quality"])
+            whisper_beam_size = int(profile["whisper_beam_size"])
+            whisper_best_of = int(profile["whisper_best_of"])
+            word_timestamps = bool(profile["word_timestamps"])
+
+            logger.info(
+                "Job %s using profile=%s whisper=%s demucs=%s mp3_quality=%s beam=%s best_of=%s words=%s lyrics=%s instrumental=%s",
+                job_id,
+                profile_key,
+                whisper_model,
+                demucs_model,
+                mp3_quality,
+                whisper_beam_size,
+                whisper_best_of,
+                word_timestamps,
+                extract_lyrics,
+                generate_instrumental,
+            )
+
             # 2. Start fast processing (just extracting audio and transcribing)
             self._jobs.set_status(job_id, "processing", 15, "Preparando audio...")
             duration = self._conversion.probe_duration_label(file_bytes, filename)
@@ -247,15 +311,36 @@ class JobsService:
                 temp_input.unlink(missing_ok=True)
                 temp_wav.unlink(missing_ok=True)
 
-            self._jobs.set_status(job_id, "processing", 45, "Transcribiendo...")
-            extracted_lrc = self._transcription.transcribe_lrc(audio_bytes, title or "", artist or "")
-            preview = build_preview(extracted_lrc)
+            extracted_lrc = None
+            preview = None
+            if extract_lyrics:
+                self._jobs.set_status(job_id, "processing", 45, f"Transcribiendo letras ({profile_key})...")
+                extracted_lrc = self._transcription.transcribe_lrc(
+                    audio_bytes,
+                    title or "",
+                    artist or "",
+                    model_name=whisper_model,
+                    beam_size=whisper_beam_size,
+                    best_of=whisper_best_of,
+                    use_word_timestamps=word_timestamps,
+                )
+                preview = build_preview(extracted_lrc)
 
-            self._jobs.set_status(job_id, "processing", 65, "Separando voz...")
-            instrumental_bytes, _ = self._separation.separate(file_bytes, filename, job_id)
+            if generate_instrumental:
+                self._jobs.set_status(job_id, "processing", 65, f"Separando voz ({profile_key})...")
+                instrumental_bytes, _ = self._separation.separate(
+                    file_bytes,
+                    filename,
+                    job_id,
+                    model_name=demucs_model,
+                    mp3_quality=mp3_quality,
+                )
 
-            self._jobs.set_status(job_id, "processing", 80, "Subiendo instrumental...")
-            self._storage.upload_instrumental(job_id, "no_vocals.mp3", instrumental_bytes)
+                self._jobs.set_status(job_id, "processing", 80, "Subiendo instrumental...")
+                self._storage.upload_instrumental(job_id, "no_vocals.mp3", instrumental_bytes)
+            else:
+                instrumental_bytes = None
+                self._jobs.set_status(job_id, "processing", 80, "Saltando instrumental...")
 
             self._jobs.set_status(job_id, "processing", 90, "Guardando resultados...")
 
@@ -270,7 +355,7 @@ class JobsService:
                 lrc=extracted_lrc,
                 tags=normalize_tags(tags),
                 video_url=f"/uploads/{job_id}/{filename}",
-                instrumental_url=f"/files/{job_id}/no_vocals.mp3",
+                instrumental_url=f"/files/{job_id}/no_vocals.mp3" if instrumental_bytes else None,
                 status="completed",
             )
 

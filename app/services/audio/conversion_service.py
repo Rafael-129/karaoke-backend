@@ -48,12 +48,13 @@ class AudioConversionService:
         wav = convert_audio(wav, sr, target_samplerate, target_channels)
         return wav
 
-    def audio_to_mp3_bytes(self, audio_np: np.ndarray, sr: int) -> bytes:
+    def audio_to_mp3_bytes(self, audio_np: np.ndarray, sr: int, quality: int = 2) -> bytes:
         temp_wav = self._settings.data_dir / f"temp-mp3-input-{uuid.uuid4().hex}.wav"
         temp_mp3 = self._settings.data_dir / f"temp-mp3-output-{uuid.uuid4().hex}.mp3"
         try:
             sf.write(str(temp_wav), audio_np, sr, format="WAV")
-            cmd = ["ffmpeg", "-y", "-i", str(temp_wav), "-codec:a", "libmp3lame", "-qscale:a", "2", str(temp_mp3)]
+            mp3_quality = str(max(0, min(9, quality)))
+            cmd = ["ffmpeg", "-y", "-i", str(temp_wav), "-codec:a", "libmp3lame", "-qscale:a", mp3_quality, str(temp_mp3)]
             subprocess.run(cmd, capture_output=True, check=True)
             return temp_mp3.read_bytes()
         finally:
